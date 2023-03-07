@@ -1,0 +1,16 @@
+site_name: AmazingBooks Inc. Book Sales Reporting
+site_dir: public
+
+theme:
+  name: material
+  palette:
+    primary: teal
+
+# Add search bar and build date
+plugins:
+  - search
+  - git-revision-date-localized:
+      type: timeago
+      timezone: Europe/Berlin
+      locale: en
+      fallback_to_build_date: true

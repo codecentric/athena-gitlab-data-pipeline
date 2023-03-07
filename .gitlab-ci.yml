@@ -1,0 +1,82 @@
+default:
+  image: alpine
+
+stages:
+  - prepare-source-data
+  - trigger-query
+  - collect-results
+  - deliver-results
+
+.prepare-book-sales-data:
+  stage: prepare-source-data
+  before_script:
+    - apk update && apk add --no-cache jq && apk add --no-cache aws-cli
+  variables:
+    # Set these in your GitLab pipeline config to match the credentials of your created aws account
+    AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY
+    AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+  script:
+    - aws s3 cp s3://your-bucket-name-here/data-delivery/$RAW_DATA_FILE_NAME $RAW_DATA_FILE_NAME
+    - cat $RAW_DATA_FILE_NAME | jq -c '.[]' > $RAW_DATA_FILE_NAME-jsonlines.json
+    - aws s3 cp $RAW_DATA_FILE_NAME-jsonlines.json s3://your-bucket-name-here/$SOURCE_SYSTEM/
+
+prepare-book-sales-data-system-a:
+  extends: .prepare-book-sales-data
+  variables:
+    SOURCE_SYSTEM: system-a
+    RAW_DATA_FILE_NAME: book-sales-system-a.json
+
+prepare-book-sales-data-system-b:
+  extends: .prepare-book-sales-data
+  variables:
+    SOURCE_SYSTEM: system-a
+    RAW_DATA_FILE_NAME: book-sales-system-a.json
+
+trigger-athena-query:
+  image:
+    name: amazon/aws-cli
+    entrypoint: [ "" ]
+  variables:
+    AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY
+    AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+  stage: trigger-query
+  dependencies:
+    - prepare-book-sales-data-system-a
+    - prepare-book-sales-data-system-b
+  script:
+    - |
+      aws lambda invoke --function-name your-function-arn-here --invocation-type RequestResponse --cli-binary-format raw-in-base64-out --payload '{ "queryBy": "month" }' lambda-response.json
+  artifacts:
+    paths:
+      - lambda-response.json
+
+collect-query-result:
+  variables:
+    AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY
+    AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+  stage: collect-results
+  dependencies:
+    - trigger-athena-query
+  before_script:
+    - apk update && apk add --no-cache jq && apk add --no-cache aws-cli
+  script:
+    - ATHENA_QUERY_EXEC_ID=$(cat lambda-response.json|jq -r '.QueryExecutionId')
+    - aws s3 cp s3://your-bucket-name-here/query-results/lambda-triggered/$ATHENA_QUERY_EXEC_ID.csv book-sales-by-month.csv
+  artifacts:
+    paths:
+      - book-sales-by-month.csv
+
+# Make sure to activate GitLab pages in your repo for this to work
+generate-static-page:
+  image: python:3.8-buster
+  stage: deliver-results
+  rules:
+    - if: $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH
+  before_script:
+    - pip install -r requirements.txt
+  script: # Place build artifacts in the respective subdirectories after the static pages have been generated
+    - mkdocs build
+    - cp book-sales-by-month.csv public/book-sales-by-month/
+  artifacts:
+    paths:
+      - public
